@@ -1,0 +1,59 @@
+services:
+  memgraph:
+    image: memgraph/memgraph-platform:latest
+    ports:
+      - "7687:7687"   # Bolt
+      - "7444:7444"   # Monitoring
+      - "3000:3000"   # Memgraph Lab UI
+    volumes:
+      - memgraph_data:/var/lib/memgraph
+    environment:
+      MEMGRAPH_USER: memgraph
+      MEMGRAPH_PASSWORD: memgraph
+    healthcheck:
+      test: ["CMD", "mg_client", "--host", "localhost", "--execute", "RETURN 1;"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pathway:
+    build:
+      context: .
+      dockerfile: Dockerfile  # placeholder — not yet created
+    depends_on:
+      memgraph:
+        condition: service_healthy
+    environment:
+      MEMGRAPH_HOST: memgraph
+      MEMGRAPH_PORT: 7687
+      MEMGRAPH_USER: memgraph
+      MEMGRAPH_PASSWORD: memgraph
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+    volumes:
+      - ./pipelines:/app/pipelines
+      - ./models:/app/models
+    # command: python -m pipelines.main   # uncomment when pipeline entrypoint exists
+
+  streamlit:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+      - ./ui:/app
+    ports:
+      - "8501:8501"
+    # command: streamlit run app.py       # uncomment when UI exists
+    profiles:
+      - ui
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    ports:
+      - "4317:4317"   # gRPC
+      - "4318:4318"   # HTTP
+    volumes:
+      - ./otel-collector-config.yml:/etc/otelcol-contrib/config.yaml
+    profiles:
+      - observability
+
+volumes:
+  memgraph_data:
