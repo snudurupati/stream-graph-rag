@@ -1,4 +1,4 @@
-# 🚀 stream-graph-rag
+# 🚀 Autonomous Knowledge Fabric
 ### A Real-Time Account Intelligence Reference Architecture
 
 > *"Most enterprise AI agents are failing in production because they rely on stale context — we're feeding 2026-speed models with 1996-speed batch pipelines."*
