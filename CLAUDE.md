@@ -25,3 +25,11 @@ and update account risk score in <60 seconds.
 - Tests use pytest, run via `.venv312/bin/pytest tests/`
 - Always use `.venv312/bin/python` (Python 3.12) — the default `.venv` is Python 3.14 which lacks pyarrow/Pathway wheels
 - Docker stack starts with `docker compose up -d`
+- `timeout` is not available on macOS (GNU coreutils only) — use Python-native loop control instead of shell `timeout`
+
+## Claude Code Notes
+- Custom commands live in .claude/commands/
+- After adding/editing any command file, quit and relaunch 
+  Claude Code for changes to take effect
+- Sprint rhythm: /sprint-start → work → /sprint-end
+- Run /compact mid-sprint if Claude starts forgetting context
