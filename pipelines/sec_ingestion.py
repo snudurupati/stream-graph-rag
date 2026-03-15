@@ -2,7 +2,7 @@
 # Pathway pipeline: poll SEC EDGAR RSS + EFTS → normalize → emit AccountEvent.
 
 import re
-import time
+import time as time_module
 import warnings
 from html import unescape
 from typing import Optional
@@ -12,6 +12,7 @@ import pathway as pw
 import requests
 from pydantic import ValidationError
 
+from graph.memgraph_client import MemgraphClient
 from models.account_event import AccountEvent, EventSource, RiskSignal
 
 # ---------------------------------------------------------------------------
@@ -186,7 +187,7 @@ class SECFeedSubject(pw.io.python.ConnectorSubject):
                 f"{new_count} new, {len(seen)} total seen",
                 flush=True,
             )
-            time.sleep(POLL_INTERVAL_SECS)
+            time_module.sleep(POLL_INTERVAL_SECS)
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +228,14 @@ def _row_to_account_event(row: dict) -> Optional[AccountEvent]:
 # ---------------------------------------------------------------------------
 
 _event_count = 0
+_graph_client: MemgraphClient | None = None
+
+
+def _get_graph_client() -> MemgraphClient:
+    global _graph_client
+    if _graph_client is None:
+        _graph_client = MemgraphClient()
+    return _graph_client
 
 
 def _on_change(key: pw.Pointer, row: dict, time: int, is_addition: bool) -> None:
@@ -237,6 +246,19 @@ def _on_change(key: pw.Pointer, row: dict, time: int, is_addition: bool) -> None
     if event is None:
         return
     _event_count += 1
+
+    t0 = time_module.monotonic()
+    try:
+        _get_graph_client().upsert_event(event)
+        elapsed_ms = int((time_module.monotonic() - t0) * 1000)
+        signals_str = ", ".join(s.value for s in event.risk_signals) or "none"
+        print(
+            f"Graph updated: {event.company_name} [{signals_str}] in {elapsed_ms}ms",
+            flush=True,
+        )
+    except Exception as exc:
+        warnings.warn(f"Graph write failed for {event.company_name}: {exc}")
+
     print(f"\n=== AccountEvent #{_event_count} ===")
     print(event.model_dump_json(indent=2))
 

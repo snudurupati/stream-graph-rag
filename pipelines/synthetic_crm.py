@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 from faker import Faker
 
+from graph.memgraph_client import MemgraphClient
 from models.account_event import AccountEvent, EventSource, RiskSignal
 
 fake = Faker()
@@ -87,17 +88,32 @@ class ZendeskEventGenerator:
         )
 
 
-def run(interval_secs: int = 10) -> None:
+def run(interval_secs: int = 10, write_graph: bool = True) -> None:
     sf_gen = SalesforceEventGenerator()
     zd_gen = ZendeskEventGenerator()
     generators = [sf_gen, zd_gen]
     count = 0
+    client = MemgraphClient() if write_graph else None
 
     while True:
         company = random.choice(SEED_COMPANIES)
         gen = generators[count % 2]
         event = gen.generate(company=company)
         count += 1
+
+        if client is not None:
+            t0 = time.monotonic()
+            try:
+                client.upsert_event(event)
+                elapsed_ms = int((time.monotonic() - t0) * 1000)
+                signals_str = ", ".join(s.value for s in event.risk_signals) or "none"
+                print(
+                    f"Graph updated: {event.company_name} [{signals_str}] in {elapsed_ms}ms",
+                    flush=True,
+                )
+            except Exception as exc:
+                print(f"Graph write failed for {event.company_name}: {exc}", flush=True)
+
         print(f"\n=== Event #{count} ({event.source.value}) ===")
         print(event.model_dump_json(indent=2))
         time.sleep(interval_secs)
