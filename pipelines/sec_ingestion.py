@@ -167,6 +167,11 @@ class RawEntrySchema(pw.Schema):
 # Pathway input connector
 # ---------------------------------------------------------------------------
 
+# Tracks monotonic timestamp of self.next_json() per entry_id so _on_change
+# can compute fetch_ms = time from submission to handler dispatch.
+_submitted_ts: dict[str, float] = {}
+
+
 class SECFeedSubject(pw.io.python.ConnectorSubject):
     """Polls both SEC feeds every POLL_INTERVAL_SECS; deduplicates by entry_id."""
 
@@ -179,8 +184,7 @@ class SECFeedSubject(pw.io.python.ConnectorSubject):
                 eid = entry["entry_id"]
                 if eid and eid not in seen:
                     seen.add(eid)
-                    company, _ = _parse_atom_title(entry.get("title", ""))
-                    latency_tracker.record_event_received(eid, "SEC_EDGAR", company)
+                    _submitted_ts[eid] = time_module.monotonic()
                     self.next_json(entry)
                     new_count += 1
             print(
@@ -251,21 +255,46 @@ def _on_change(key: pw.Pointer, row: dict, time: int, is_addition: bool) -> None
     global _event_count
     if not is_addition:
         return
+
+    eid = row.get("entry_id", "")
+    t_submitted = _submitted_ts.pop(eid, None)
+
+    # --- parse phase ---
+    t_parse_start = time_module.monotonic()
     event = _row_to_account_event(row)
+    t_parse_end = time_module.monotonic()
+
     if event is None:
         return
     _event_count += 1
 
-    t0 = time_module.monotonic()
+    # Measurement starts HERE: parse is complete, company name is known.
+    latency_tracker.record_event_received(eid, "SEC_EDGAR", event.company_name)
+
+    # --- write phase ---
     try:
         _get_graph_client().upsert_event(event)
-        elapsed_ms = int((time_module.monotonic() - t0) * 1000)
-        latency_tracker.record_graph_written(row.get("entry_id", event.event_id))
+        t_write_end = time_module.monotonic()
+        latency_tracker.record_graph_written(eid)
+
         signals_str = ", ".join(s.value for s in event.risk_signals) or "none"
+        parse_ms = (t_parse_end - t_parse_start) * 1000
+        write_ms = (t_write_end - t_parse_end) * 1000
+        total_ms = parse_ms + write_ms
+        fetch_ms = (t_parse_start - t_submitted) * 1000 if t_submitted else None
+
         print(
-            f"Graph updated: {event.company_name} [{signals_str}] in {elapsed_ms}ms",
+            f"Graph updated: {event.company_name} [{signals_str}] in {total_ms:.1f}ms",
             flush=True,
         )
+
+        if _event_count <= 3:
+            fetch_str = f"{fetch_ms:.1f}ms" if fetch_ms is not None else "n/a"
+            print(
+                f"  [DEBUG #{_event_count}] fetch_ms={fetch_str} "
+                f"parse_ms={parse_ms:.1f} write_ms={write_ms:.1f} total_ms={total_ms:.1f}",
+                flush=True,
+            )
     except Exception as exc:
         warnings.warn(f"Graph write failed for {event.company_name}: {exc}")
 
