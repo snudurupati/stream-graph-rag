@@ -1,7 +1,7 @@
 # Sprint Handoff Notes
 
 ## Sprint Completed
-Sprint 8 (Week 2, Day 2) — 2026-03-15
+Sprint 9 (Week 2, Day 3) — 2026-03-15
 
 ## What Was Built
 
@@ -16,7 +16,7 @@ Sprint 8 (Week 2, Day 2) — 2026-03-15
 - 4 pytest tests: 4 passed
 
 ### Sprint 3 — Live SEC EDGAR ingestion pipeline (`pipelines/sec_ingestion.py`)
-- Polls Atom feed (20 8-Ks) + EFTS JSON (hostile takeover) every 30 seconds
+- Polls Atom feed (40 8-Ks) + EFTS JSON every 30 seconds
 - Deduplicates by `entry_id`, extracts `AccountEvent` with risk-signal keyword matching
 - Pathway connector: `SECFeedSubject` → `pw.io.python.read` → `pw.io.subscribe`
 
@@ -27,46 +27,46 @@ Sprint 8 (Week 2, Day 2) — 2026-03-15
 
 ### Sprint 5 — Week 1 wrap-up & scaffolding
 - Published Week 1 Substack post, updated README and CLAUDE.md
-- Created stub files: `graph/memgraph_client.py`, `scoring/account_health.py`,
-  `dashboard/app.py`, `baseline_rag/nightly_batch.py`
+- Created stub files for graph, scoring, dashboard, baseline_rag packages
 
 ### Sprint 6 — Graph write-back via Bolt (`graph/memgraph_client.py`)
-- `MemgraphClient` class connecting to Memgraph on `bolt://localhost:7687` (`admin/admin`)
-- 3-retry backoff on `ServiceUnavailable` / `SessionExpired`
-- `upsert_account(event)`: `MERGE` on `company_name`, sets domain/cik/account_id/source/last_updated,
-  creates `RiskSignal` nodes + `HAS_SIGNAL` edges with timestamp
-- `upsert_event(event)`: calls `upsert_account` + creates raw `Event` node with `FILED` edge
-- `get_account_with_relationships(company_name)`: returns account + all 1-hop rels as dict
-- `pipelines/sec_ingestion.py`: calls `client.upsert_event()` per AccountEvent, prints
-  `Graph updated: {company} [{signals}] in {ms}ms`
-- `pipelines/synthetic_crm.py`: same write-back, `write_graph=True` by default
-- `tests/test_memgraph_client.py`: 7 integration tests against live Memgraph
+- `MemgraphClient` with 3-retry backoff, `upsert_account`, `upsert_event`,
+  `get_account_with_relationships`
+- Both pipelines wired to call `upsert_event()` per event
+- 7 integration tests against live Memgraph
 
 ### Sprint 7 — Cypher query layer + Agent Context API
-- 4 new read methods added to `graph/memgraph_client.py`:
-  - `get_account_context(company_name)`: returns 7-key dict with company info, risk signals,
-    recent events, and `context_age_seconds` computed from `last_updated` ISO timestamp
-  - `get_high_risk_accounts()`: returns accounts ordered by signal count DESC, max 20
-  - `get_accounts_updated_since(seconds_ago)`: Python-side ISO date filter (Memgraph lacks APOC)
-  - `search_accounts(query)`: case-insensitive substring search, limit 10
-- New `graph/context_api.py`: LLM-facing `get_agent_context(company_name) -> str`
-  - Formats an "ACCOUNT INTELLIGENCE REPORT" with freshness label (LIVE/RECENT/STALE)
-  - `freshness_label(age_seconds)` extracted as a pure testable function
-- New `tests/test_context_api.py`: 4 integration tests, all passing (0.89s)
-- Critical schema fix: sprint spec incorrectly referenced `s.signal_type` — actual
-  property is `s.name`; all Cypher queries use `s.name`
+- 4 read methods on `MemgraphClient`: `get_account_context`, `get_high_risk_accounts`,
+  `get_accounts_updated_since`, `search_accounts`
+- `graph/context_api.py`: `get_agent_context()` + `freshness_label()` (LIVE/RECENT/STALE)
+- 4 integration tests: 4 passed
 
 ### Sprint 8 — SEC feed URL + entry parsing fixes
-- Updated `ATOM_FEED_URL`: bumped `count=20` → `count=40`, added `search_text=` param
-- Fixed `_ATOM_TITLE_RE`: now captures both company name (group 1) AND CIK (group 2)
-  directly from title `"8-K - CompanyName (CIK) (Filer)"` — previously CIK was
-  unreliably parsed from the URL path `/edgar/data/<CIK>/`
-- Replaced `_atom_company_name()` + `_atom_cik()` with single `_parse_atom_title()`
-- Added `filing_date` field (from `entry.updated`) to atom/EFTS dicts, `RawEntrySchema`,
-  and `AccountEvent.timestamp` — events now carry the actual SEC filing date, not
-  ingest time
-- CLAUDE.md: documented SEC 8-K Item codes → RiskSignal mapping (Items 1.02, 2.01,
-  2.05, 2.06, 3.01)
+- `count=40`, CIK parsed from title (not URL), `AccountEvent.timestamp` = filing date
+- CLAUDE.md: SEC 8-K Item codes → RiskSignal mapping documented
+
+### Sprint 9 — OpenTelemetry instrumentation + live latency dashboard
+- **`observability/telemetry.py`**:
+  - `init_tracer(service_name)` → `TracerProvider` + `ConsoleSpanExporter`
+  - Global `tracer` instance (`"autonomous-knowledge-fabric"`)
+  - `LatencyTracker` class: `record_event_received(event_id, source, company)`,
+    `record_graph_written(event_id)`, `get_stats()` → p50/p95/p99/min/max/mean,
+    `reset()`, `last_event_monotonic()`
+  - Flushes stats to `$TMPDIR/akf_latency_stats.json` after every event for
+    cross-process dashboard reads
+  - Global `latency_tracker` singleton
+- **`observability/latency_dashboard.py`**:
+  - Reads `akf_latency_stats.json`, renders live panel every 30s
+  - Context freshness derived from `last_event_wall` ISO timestamp via `freshness_label()`
+- **`graph/memgraph_client.py`**:
+  - `upsert_event()` wrapped in `tracer.start_as_current_span("graph.upsert")`
+  - Logs `BOLT_WRITE company={name} elapsed_ms={ms}` per write
+- **`pipelines/sec_ingestion.py`**:
+  - `record_event_received()` called on first RSS detection (after `_parse_atom_title`)
+  - `record_graph_written()` called after successful `upsert_event()`
+- **`pipelines/synthetic_crm.py`**: same instrumentation, source = SALESFORCE/ZENDESK
+- **`observability/__init__.py`**: package init created
+- **`tests/test_telemetry.py`**: 5 unit tests (no live Memgraph required)
 
 ## What Broke and How It Was Fixed
 
@@ -74,48 +74,65 @@ Sprint 8 (Week 2, Day 2) — 2026-03-15
 |---|---|
 | `feedparser` returned 0 entries from SEC | Added `User-Agent` header |
 | `docker-compose.yml` was a shell script | Rewrote to proper YAML |
-| `pw.debug.table_from_markdown` failed with multi-word fields | Switched to `table_from_pandas` |
 | Default `.venv` is Python 3.14 — no pyarrow wheels | Use `.venv312/` (Python 3.12) |
 | `.venv312/bin/pip` broken after project rename | Use `python3.12 -m pip` |
 | `.venv312` accidentally committed (160MB binary) | `git filter-repo` + `.gitignore`, force-push |
-| Memgraph requires `admin/admin` auth (not no-auth) | Probed both auth configs before writing client |
-| `time` import shadowed by `time` parameter in `_on_change` | Aliased as `import time as time_module` |
-| `.venv312` wiped by `git filter-repo` history rewrite | Recreated from `requirements.txt` |
+| Memgraph requires `admin/admin` auth | Probed both auth configs before writing client |
 | `neo4j` driver not in requirements | Installed + frozen (`neo4j==6.1.0`) |
-| CIK parsed from URL path (unreliable, stripped by index page redirect) | Parse from Atom title directly via updated regex |
+| CIK parsed from URL path (unreliable) | Parse from Atom title directly via updated regex |
 | `AccountEvent.timestamp` set to ingest time | Set from `entry.updated` ISO string |
+| `latency_tracker` is in-process singleton — dashboard in separate process sees 0 events | Flush stats to `$TMPDIR/akf_latency_stats.json`; dashboard reads file |
+| `record_event_received()` called with raw title string as company name | Moved call to after `_parse_atom_title()` so normalized name is logged |
 
 ## Real Output Observed
 
 ```
-pytest tests/test_context_api.py -v
-4 passed in 0.89s
-
 pytest tests/ -v
-62 passed in 0.91s
+67 passed in 0.96s
 
-get_agent_context("carbonite"):
-ACCOUNT INTELLIGENCE REPORT
-Company: carbonite
-Last Updated: 2026-03-15T17:21:17.840941+00:00 (1868 seconds ago)
-Risk Signals: None detected
-Recent Events (13 total):
-- Carbonite Inc filed 8-K on 2016-05-03. Items: 2.02, 7.01, 9.01. Accession: 0001340127-16-000175
-- Carbonite Inc filed 8-K on 2016-02-04. Items: 2.02, 5.02, 7.01, 8.01, 9.01. Accession: 0001340127-16-000116
-- Carbonite Inc filed 8-K on 2016-08-02. Items: 2.02, 7.01, 9.01. Accession: 0001340127-16-000212
-Context Freshness: STALE (1868s)
+Pipeline LATENCY log:
+LATENCY event_id=urn:tag:sec.gov,...  company=ispecimen  source=SEC_EDGAR  elapsed_ms=810.1
+BOLT_WRITE company=ispecimen elapsed_ms=1
 
-Parsed AccountEvents from live feed (Sprint 8):
-company: multisensor ai holdings  cik: 0001863990  timestamp: 2026-03-13 17:30:01-04:00  signals: []
-company: applied digital           cik: 0001144879  timestamp: 2026-03-13 17:29:08-04:00  signals: [EXECUTIVE_DEPARTURE]
-company: tivic health systems      cik: 0001787740  timestamp: 2026-03-13 17:27:44-04:00  signals: []
+OTel span (ConsoleSpanExporter):
+{
+  "name": "graph.upsert",
+  "attributes": {"company_name": "ispecimen", "source": "SEC_EDGAR", "elapsed_ms": 1},
+  "start_time": "2026-03-15T18:27:05.438521Z",
+  "end_time":   "2026-03-15T18:27:05.440112Z"
+}
+
+Live dashboard (pipeline running):
+══════════════════════════════════════════
+AUTONOMOUS KNOWLEDGE FABRIC — LIVE STATS
+══════════════════════════════════════════
+Timestamp:          2026-03-15 18:33:37 UTC
+Events tracked:     39
+P50 latency:        896.4ms
+P95 latency:        914.9ms
+P99 latency:        916.4ms
+Min latency:        863.2ms
+Max latency:        916.9ms
+Mean latency:       894.3ms
+Context freshness:  LIVE (sub-60s)
+══════════════════════════════════════════
 ```
 
-Graph write latency (warm Bolt connection): **0–1ms** per upsert.
+**Latency notes:**
+- Cold-start batch (~810–916ms): first RSS poll emits 139 entries simultaneously;
+  Pathway sequences them through `_on_change`, so entries at the back of the queue
+  wait for earlier ones — not representative of steady-state latency
+- Bolt write latency (warm connection): **0–1ms** per upsert
+- Steady-state streaming latency expected: **~20–100ms** (single event, warm pipeline)
+
+## Known Issues (Sprint 10 Cleanup)
+- [x] LATENCY log company field showed raw title, not normalized name — fixed this sprint
+- Cold-start batch latency (~810ms) is not representative of steady-state streaming
+  latency (~20–100ms); needs a single-event benchmark to confirm
 
 ## Next Sprint Goal
 
-**Sprint 9 — Risk signal accuracy: Item-code mapping**
+**Sprint 10 — Risk signal accuracy: Item-code mapping**
 - Update `_SIGNAL_PATTERNS` in `sec_ingestion.py` to use correct 8-K Item codes
   per CLAUDE.md mapping:
   - Item 1.02 → CONTRACT_RENEWAL_AT_RISK

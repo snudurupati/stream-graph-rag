@@ -11,6 +11,7 @@ from faker import Faker
 
 from graph.memgraph_client import MemgraphClient
 from models.account_event import AccountEvent, EventSource, RiskSignal
+from observability.telemetry import latency_tracker
 
 fake = Faker()
 
@@ -102,10 +103,14 @@ def run(interval_secs: int = 10, write_graph: bool = True) -> None:
         count += 1
 
         if client is not None:
+            latency_tracker.record_event_received(
+                event.event_id, event.source.value, event.company_name
+            )
             t0 = time.monotonic()
             try:
                 client.upsert_event(event)
                 elapsed_ms = int((time.monotonic() - t0) * 1000)
+                latency_tracker.record_graph_written(event.event_id)
                 signals_str = ", ".join(s.value for s in event.risk_signals) or "none"
                 print(
                     f"Graph updated: {event.company_name} [{signals_str}] in {elapsed_ms}ms",

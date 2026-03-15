@@ -9,6 +9,7 @@ from neo4j import GraphDatabase
 from neo4j.exceptions import ServiceUnavailable, SessionExpired
 
 from models.account_event import AccountEvent
+from observability.telemetry import tracer
 
 _BOLT_URI = "bolt://localhost:7687"
 _AUTH = ("admin", "admin")
@@ -112,6 +113,16 @@ class MemgraphClient:
 
     def upsert_event(self, event: AccountEvent) -> None:
         """Upsert Account + RiskSignals, then create a raw Event node with FILED edge."""
+        with tracer.start_as_current_span("graph.upsert") as span:
+            span.set_attribute("company_name", event.company_name)
+            span.set_attribute("source", event.source.value)
+            t0 = time.perf_counter()
+            self._upsert_event_inner(event)
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            span.set_attribute("elapsed_ms", elapsed_ms)
+            print(f"BOLT_WRITE company={event.company_name} elapsed_ms={elapsed_ms}", flush=True)
+
+    def _upsert_event_inner(self, event: AccountEvent) -> None:
         self.upsert_account(event)
 
         now_iso = datetime.now(timezone.utc).isoformat()

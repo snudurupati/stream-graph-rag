@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from graph.memgraph_client import MemgraphClient
 from models.account_event import AccountEvent, EventSource, RiskSignal
+from observability.telemetry import latency_tracker
 
 # ---------------------------------------------------------------------------
 # Feed URLs
@@ -178,6 +179,8 @@ class SECFeedSubject(pw.io.python.ConnectorSubject):
                 eid = entry["entry_id"]
                 if eid and eid not in seen:
                     seen.add(eid)
+                    company, _ = _parse_atom_title(entry.get("title", ""))
+                    latency_tracker.record_event_received(eid, "SEC_EDGAR", company)
                     self.next_json(entry)
                     new_count += 1
             print(
@@ -257,6 +260,7 @@ def _on_change(key: pw.Pointer, row: dict, time: int, is_addition: bool) -> None
     try:
         _get_graph_client().upsert_event(event)
         elapsed_ms = int((time_module.monotonic() - t0) * 1000)
+        latency_tracker.record_graph_written(row.get("entry_id", event.event_id))
         signals_str = ", ".join(s.value for s in event.risk_signals) or "none"
         print(
             f"Graph updated: {event.company_name} [{signals_str}] in {elapsed_ms}ms",
